@@ -22,6 +22,10 @@ class TranscriptFetchError(TranscriptAppError):
     """Raised when youtube-transcript-api fails."""
 
 
+class WhisperFetchError(TranscriptAppError):
+    """Raised when Whisper transcription fails."""
+
+
 # --- Enums ---
 
 class DownloadStatus(Enum):
@@ -30,6 +34,12 @@ class DownloadStatus(Enum):
     FETCHING_TRANSCRIPT = "fetching_transcript"
     SUCCESS = "success"
     FAILED = "failed"
+
+
+class WhisperModelSize(Enum):
+    TINY = "tiny"       # ~39 MB
+    BASE = "base"       # ~74 MB
+    SMALL = "small"     # ~244 MB
 
 
 # --- Dataclasses ---
@@ -62,6 +72,15 @@ class VideoTranscript:
 class VideoResult:
     video_id: str
     metadata: VideoMetadata | None = None
+    transcript: VideoTranscript | None = None
+    status: DownloadStatus = DownloadStatus.PENDING
+    error_message: str = ""
+
+
+@dataclass
+class LocalFileResult:
+    file_path: str
+    file_name: str
     transcript: VideoTranscript | None = None
     status: DownloadStatus = DownloadStatus.PENDING
     error_message: str = ""

@@ -36,6 +36,9 @@ desktop.ini
 !README.md
 !LICENSE
 
+# Whisper models (bundled at build time, too large for git)
+whisper_models/
+
 # Misc
 *.log
 .env
