@@ -3,9 +3,11 @@
 # Build with: pyinstaller build.spec --noconfirm
 
 import os
+import sys
 import customtkinter
 
 block_cipher = None
+is_macos = sys.platform == "darwin"
 
 ctk_path = os.path.dirname(customtkinter.__file__)
 
@@ -16,6 +18,7 @@ a = Analysis(
     datas=[
         (ctk_path, "customtkinter/"),
         ("whisper_models/base", "whisper_models/base"),
+        ("assets", "assets"),
     ],
     hiddenimports=[
         "customtkinter",
@@ -51,7 +54,7 @@ exe = EXE(
     strip=False,
     upx=True,
     console=False,  # No console window
-    # icon="assets/icon.ico",  # Uncomment if you add an icon
+    icon="assets/icon.icns" if is_macos else "assets/icon.ico",
 )
 
 coll = COLLECT(
@@ -64,3 +67,15 @@ coll = COLLECT(
     upx_exclude=[],
     name="VanScript",
 )
+
+if is_macos:
+    app = BUNDLE(
+        coll,
+        name="VanScript.app",
+        icon="assets/icon.icns",
+        bundle_identifier="com.vanscript.app",
+        info_plist={
+            "CFBundleShortVersionString": "1.0.0",
+            "NSHighResolutionCapable": True,
+        },
+    )
