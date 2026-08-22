@@ -1,100 +1,161 @@
 # VanScript
 
-YouTube transcript downloader and local file transcriber with a modern desktop GUI. Paste YouTube URLs to download transcripts, or select local video/audio files to transcribe with Whisper AI — all in one app.
+YouTube transcript downloader with a dark desktop GUI. Paste YouTube URLs, get a
+formatted transcript file.
 
 Built by **VanDev**.
 
+> **v2.0 — ported from Python to Rust.** The YouTube side is now a single 7 MB
+> native binary with no runtime dependencies, down from 78 MB. The Python app
+> lives on for Whisper transcription of local files. See
+> [Which version do I want?](#which-version-do-i-want) below.
+
 ## Features
 
-### YouTube Transcripts
 - Paste multiple YouTube URLs and download all transcripts at once
-- Auto-detects available languages (Spanish, English, Portuguese, French, German)
+- Language preference with fallback (Spanish, English, Portuguese, French, German)
 - One failed video never stops the rest
+- Optional timestamps `[HH:MM:SS]` per line
+- Output file named automatically from video titles and dates
+- Auto-opens the output file when done
+- Dark UI with a dev-tool aesthetic
+- Also runs headless as a CLI
 
-### Local File Transcription (Whisper)
+### Local file transcription (Python version only)
+
 - Transcribe local video/audio files (.mp4, .mkv, .mp3, .wav, .m4a, .webm, .ogg, .flac)
 - Powered by [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (CTranslate2)
 - Whisper model (base) bundled — no download needed on first use
 - Supports 9 languages + auto-detect
 
-### Shared
-- Optional timestamps `[HH:MM:SS]` per line
-- Output file named automatically from video titles / file names
-- Auto-opens the output file when done
-- Dark UI with a dev-tool aesthetic
-- Tabbed interface: **YouTube URLs** | **Local Files**
+## Which version do I want?
 
-## Screenshot
+|                        | Rust (`vanscript-rs/`) | Python (repo root) |
+|------------------------|------------------------|--------------------|
+| YouTube transcripts    | yes                    | yes                |
+| Local files (Whisper)  | no                     | yes                |
+| Binary size            | ~7 MB                  | ~78 MB (lite) / ~450 MB (with Whisper) |
+| Runtime dependencies   | none                   | Python + yt-dlp + youtube-transcript-api |
+| Startup                | instant                | interpreter + imports |
 
-> Run the app and see for yourself :)
+Both produce byte-identical output files. Take the Rust build unless you need
+Whisper.
 
-## Requirements
+## Install
 
-- Python 3.10+
-- Internet connection (for YouTube transcripts)
+Download a build from [Releases](https://github.com/edoriban/vanscript/releases),
+extract, and run — nothing to install.
 
-## Installation
+- Linux: `VanScript-v2.0-linux-x86_64.tar.gz` → `./VanScript`
+- Windows: `VanScript-v2.0-win64.zip` → `VanScript.exe`
 
-```bash
-# Clone the repo
-git clone https://github.com/edoriban/vanscript.git
-cd vanscript
+## Usage (Rust)
 
-# Install dependencies
-pip install -r requirements.txt
-```
+Launch with no arguments for the GUI:
 
-## Usage
-
-```bash
-python main.py
-```
-
-### YouTube URLs tab
 1. Paste YouTube URLs (one per line) into the text area
 2. Choose the preferred language
 3. Optionally enable timestamps
 4. Click **Download Transcripts**
 
-### Local Files tab
+The output `.txt` opens automatically when done.
+
+Pass arguments and it runs as a CLI instead:
+
+```bash
+vanscript https://youtu.be/dQw4w9WgXcQ            # one video
+vanscript --stdin -t -l es,en < urls.txt          # a list, with timestamps
+vanscript --help
+```
+
+| Option | Meaning |
+|--------|---------|
+| `-l`, `--lang <CODES>` | Comma-separated language preference (default `es,en`) |
+| `-o`, `--out <DIR>` | Output directory (default `~/Downloads`) |
+| `-t`, `--timestamps` | Prefix every line with `[HH:MM:SS]` |
+| `--stdin` | Read URLs from standard input, one per line |
+
+## Usage (Python, for Whisper)
+
+```bash
+pip install -r requirements.txt
+python main.py
+```
+
+The **Local Files** tab appears only when `faster-whisper` is installed, so a
+lite install gives you the YouTube tab alone.
+
 1. Click **Select Files** to choose video/audio files
 2. Pick the Whisper model size (tiny / base / small)
 3. Choose the language (or auto-detect)
 4. Click **Transcribe**
 
-The output `.txt` file will open automatically when done.
+## Building
 
-## Build as .exe (Windows)
+### Rust
 
 ```bash
-pyinstaller build.spec --noconfirm
+make rs-build     # release binary in vanscript-rs/target/release/
+make rs-test      # clippy -D warnings, then the test suite
 ```
 
-The executable will be in `dist/VanScript/`. The Whisper base model is bundled automatically.
+Cross-compiling for Windows needs [cargo-xwin](https://github.com/rust-cross/cargo-xwin):
+
+```bash
+cargo install cargo-xwin
+rustup target add x86_64-pc-windows-msvc
+cd vanscript-rs && cargo xwin build --release --target x86_64-pc-windows-msvc
+```
+
+### Python
+
+```bash
+pyinstaller build.spec --noconfirm    # full build, Whisper model bundled
+make build-lite                       # YouTube only, no Whisper
+```
+
+## How it works
+
+The Rust version talks to YouTube's InnerTube API directly, which is what
+replaced both Python dependencies:
+
+1. `GET` the watch page once — scrape the `INNERTUBE_API_KEY` (it rotates, so it
+   cannot be hardcoded) and the upload date.
+2. `POST youtubei/v1/player` with that key and an ANDROID client context. The
+   response carries the video metadata *and* caption track URLs that work without
+   a proof-of-origin token, which the ones on the watch page do not.
+3. `GET` the chosen caption track as `json3`.
 
 ## Project Structure
 
 ```
-├── main.py              # Entry point
-├── app.py               # CustomTkinter GUI (tabbed)
-├── core.py              # YouTube + Whisper transcription logic
-├── models.py            # Dataclasses and exceptions
-├── utils.py             # URL parsing, filename utils
-├── requirements.txt     # Dependencies
-├── build.spec           # PyInstaller config
-├── whisper_models/      # Bundled Whisper model (base)
-└── LICENSE              # CC BY-NC 4.0
+├── vanscript-rs/            # Rust port (v2.0) — YouTube transcripts
+│   ├── src/youtube.rs       #   InnerTube API client
+│   ├── src/output.rs        #   URL parsing, formatting, filenames
+│   ├── src/gui.rs           #   egui interface
+│   └── src/main.rs          #   GUI launcher + CLI
+├── main.py                  # Python entry point
+├── app.py                   # CustomTkinter app shell (tabbed)
+├── theme.py                 # Colours and language presets
+├── ui/                      # Reusable widgets and layout sections
+├── core.py                  # YouTube + Whisper transcription logic
+├── models.py                # Dataclasses and exceptions
+├── utils.py                 # URL parsing, filename utils
+├── build.spec               # PyInstaller config (LITE=1 skips Whisper)
+├── assets/                  # App icons (ico / icns / png)
+├── whisper_models/          # Bundled Whisper model (base)
+└── LICENSE                  # CC BY-NC 4.0
 ```
 
 ## Tech Stack
 
-| Component          | Library                |
-|--------------------|------------------------|
-| GUI                | CustomTkinter          |
-| YouTube Transcripts| youtube-transcript-api |
-| Video metadata     | yt-dlp                 |
-| Local transcription| faster-whisper         |
-| Packaging          | PyInstaller            |
+| Component           | Rust            | Python                 |
+|---------------------|-----------------|------------------------|
+| GUI                 | egui / eframe   | CustomTkinter          |
+| YouTube transcripts | InnerTube + reqwest | youtube-transcript-api |
+| Video metadata      | InnerTube + reqwest | yt-dlp             |
+| Local transcription | —               | faster-whisper         |
+| Packaging           | cargo           | PyInstaller            |
 
 ## License
 

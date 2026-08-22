@@ -1,0 +1,30 @@
+[package]
+name = "vanscript-rs"
+version = "2.0.0"
+edition = "2024"
+rust-version = "1.85"
+
+[dependencies]
+anyhow = "1.0.104"
+chrono = { version = "0.4.45", default-features = false, features = ["std", "alloc"] }
+eframe = { version = "0.32.3", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "json", "gzip", "rustls", "http2"] }
+rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
+serde_json = "1.0.151"
+
+[lints.rust]
+unused_must_use = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+todo = "deny"
+
+# Size matters more than raw speed here: the whole point of the Rust port was a
+# small binary, and the work is network-bound anyway.
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = "symbols"
+panic = "abort"

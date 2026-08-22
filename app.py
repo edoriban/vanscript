@@ -1,5 +1,6 @@
 """CustomTkinter GUI for VanScript — YouTube transcript downloader by VanDev."""
 
+import importlib.util
 import os
 import subprocess
 import sys
@@ -22,6 +23,9 @@ from ui.sections import (
     StatusLog,
     YouTubeTab,
 )
+
+# The lite build ships without faster-whisper; hide the Local Files tab then.
+HAS_WHISPER = importlib.util.find_spec("faster_whisper") is not None
 
 customtkinter.set_appearance_mode("dark")
 customtkinter.set_default_color_theme("green")
@@ -78,16 +82,18 @@ class TranscriptDownloaderApp(customtkinter.CTk):
         )
         self.tabview.grid(row=1, column=0, padx=20, pady=(10, 4), sticky="nsew")
         self.tabview.add("YouTube URLs")
-        self.tabview.add("Local Files")
-
         self.youtube_tab = YouTubeTab(
             self.tabview.tab("YouTube URLs"), download_command=self._start_download
         )
-        self.local_files_tab = LocalFilesTab(
-            self.tabview.tab("Local Files"),
-            select_files_command=self._select_local_files,
-            transcribe_command=self._start_transcription,
-        )
+
+        self.local_files_tab = None
+        if HAS_WHISPER:
+            self.tabview.add("Local Files")
+            self.local_files_tab = LocalFilesTab(
+                self.tabview.tab("Local Files"),
+                select_files_command=self._select_local_files,
+                transcribe_command=self._start_transcription,
+            )
 
         # Options
         self.options_panel = OptionsPanel(self)
@@ -152,11 +158,13 @@ class TranscriptDownloaderApp(customtkinter.CTk):
         state = "normal" if enabled else "disabled"
         self.after(0, lambda: self.youtube_tab.download_btn.configure(state=state))
         self.after(0, lambda: self.youtube_tab.lang_dropdown.configure(state=state))
-        self.after(0, lambda: self.local_files_tab.transcribe_btn.configure(state=state))
-        self.after(0, lambda: self.local_files_tab.select_files_btn.configure(state=state))
-        self.after(0, lambda: self.local_files_tab.whisper_model_dropdown.configure(state=state))
-        self.after(0, lambda: self.local_files_tab.whisper_lang_dropdown.configure(state=state))
         self.after(0, lambda: self.output_panel.browse_btn.configure(state=state))
+        if self.local_files_tab is not None:
+            tab = self.local_files_tab
+            self.after(0, lambda: tab.transcribe_btn.configure(state=state))
+            self.after(0, lambda: tab.select_files_btn.configure(state=state))
+            self.after(0, lambda: tab.whisper_model_dropdown.configure(state=state))
+            self.after(0, lambda: tab.whisper_lang_dropdown.configure(state=state))
         self.after(0, lambda: self.options_panel.timestamps_check.configure(state=state))
 
     def _clear_log(self) -> None:
