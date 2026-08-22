@@ -27,12 +27,23 @@ use anyhow::{Result, bail};
 
 use output::VideoResult;
 
-const HELP: &str = "\
+/// Usage text, with the invoked command name filled in — the binary ships as
+/// `VanScript` in the release tarball but is commonly installed as `vanscript`.
+fn help() -> String {
+    let name = std::env::args()
+        .next()
+        .and_then(|arg0| {
+            std::path::Path::new(&arg0)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| "vanscript".to_string());
+    format!("\
 VanScript — YouTube transcript downloader
 
 USAGE:
-    vanscript-rs [OPTIONS] <URL_OR_ID>...
-    vanscript-rs [OPTIONS] --stdin
+    {name} [OPTIONS] <URL_OR_ID>...
+    {name} [OPTIONS] --stdin
 
 OPTIONS:
     -l, --lang <CODES>   Comma-separated language preference (default: es,en)
@@ -40,7 +51,8 @@ OPTIONS:
     -t, --timestamps     Prefix every line with [HH:MM:SS]
         --stdin          Read URLs from standard input, one per line
     -h, --help           Show this help
-";
+")
+}
 
 struct Args {
     input: String,
@@ -60,7 +72,7 @@ fn parse_args() -> Result<Option<Args>> {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-h" | "--help" => {
-                print!("{HELP}");
+                print!("{}", help());
                 return Ok(None);
             }
             "-t" | "--timestamps" => timestamps = true,
@@ -91,7 +103,7 @@ fn parse_args() -> Result<Option<Args>> {
     };
 
     if input.trim().is_empty() {
-        print!("{HELP}");
+        print!("{}", help());
         return Ok(None);
     }
     Ok(Some(Args { input, languages, out_dir, timestamps }))
