@@ -46,8 +46,8 @@ Whisper.
 Download a build from [Releases](https://github.com/edoriban/vanscript/releases),
 extract, and run — nothing to install.
 
-- Linux: `VanScript-v2.0-linux-x86_64.tar.gz` → `./VanScript`
-- Windows: `VanScript-v2.0-win64.zip` → `VanScript.exe`
+- Linux: `VanScript-v2.0.1-linux-x86_64.tar.gz` → `./VanScript`
+- Windows: `VanScript-v2.0.1-win64.zip` → `VanScript.exe`
 
 ## Usage (Rust)
 

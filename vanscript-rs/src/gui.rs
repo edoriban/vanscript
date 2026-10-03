@@ -365,7 +365,7 @@ impl App {
 
     fn footer(&self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.label(RichText::new("VanScript v2.0").font(FontId::monospace(10.0)).color(BORDER));
+            ui.label(RichText::new(concat!("VanScript v", env!("CARGO_PKG_VERSION"))).font(FontId::monospace(10.0)).color(BORDER));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.label(RichText::new("by VanDev").size(10.0).strong().color(TEXT_DIM));
             });
