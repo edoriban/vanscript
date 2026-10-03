@@ -13,6 +13,8 @@
 //!   3. GET the chosen track's baseUrl as json3.
 
 use std::io::Read;
+use std::net::{IpAddr, Ipv4Addr};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
@@ -52,17 +54,19 @@ pub struct Transcript {
 
 pub struct Client {
     http: reqwest::blocking::Client,
+    /// Same settings, but bound to an IPv4 local address so it can never use IPv6.
+    http_v4: reqwest::blocking::Client,
+    /// Set once the default route gets rate-limited, so the rest of the batch goes
+    /// straight to IPv4 instead of hitting the captcha page again for every video.
+    force_v4: AtomicBool,
 }
 
 impl Client {
     pub fn new() -> Result<Self> {
         Ok(Self {
-            http: reqwest::blocking::Client::builder()
-                .user_agent(USER_AGENT)
-                // Set on the client, not per call site, so no request can hang forever.
-                .timeout(std::time::Duration::from_secs(30))
-                .connect_timeout(std::time::Duration::from_secs(10))
-                .build()?,
+            http: build_http(None)?,
+            http_v4: build_http(Some(IpAddr::V4(Ipv4Addr::UNSPECIFIED)))?,
+            force_v4: AtomicBool::new(false),
         })
     }
 
@@ -72,17 +76,12 @@ impl Client {
     /// code matches (exactly, or by prefix so `es` matches `es-419`) wins. If none
     /// match, the first available track is used — same fallback as the Python version.
     pub fn fetch(&self, video_id: &str, languages: &[String]) -> Result<(Metadata, Transcript)> {
-        let response = self
-            .http
-            .get(format!("https://www.youtube.com/watch?v={video_id}"))
-            .header("Accept-Language", "en-US,en")
-            .send()?;
-        let html = read_capped(response, MAX_PAGE_BYTES, "watch page")?;
+        let (http, html) = self.watch_page(video_id)?;
         let api_key = scrape(&html, "INNERTUBE_API_KEY")
             .context("INNERTUBE_API_KEY not found in watch page — YouTube changed its layout")?;
         let upload_date = scrape(&html, "uploadDate").map(utc_date).unwrap_or_default();
 
-        let player = self.player(video_id, api_key)?;
+        let player = player(http, video_id, api_key)?;
         let details = &player["videoDetails"];
         let metadata = Metadata {
             title: details["title"].as_str().unwrap_or("Unknown Title").to_string(),
@@ -91,81 +90,136 @@ impl Client {
             url: format!("https://www.youtube.com/watch?v={video_id}"),
         };
 
-        let transcript = self.transcript(&player, languages)?;
+        let transcript = transcript(http, &player, languages)?;
         Ok((metadata, transcript))
     }
 
-    fn player(&self, video_id: &str, api_key: &str) -> Result<Value> {
-        let body = json!({
-            "videoId": video_id,
-            "context": {"client": {
-                "clientName": "ANDROID",
-                "clientVersion": ANDROID_CLIENT_VERSION,
-            }},
-        });
+    /// GET the watch page, falling back to IPv4 if Google rate-limits us.
+    ///
+    /// Google flags whole IPv6 ranges as bot traffic far more readily than IPv4,
+    /// answering with a captcha page instead of the video. The connection that got
+    /// through is returned so the follow-up API calls use the same route.
+    fn watch_page(&self, video_id: &str) -> Result<(&reqwest::blocking::Client, String)> {
+        let url = format!("https://www.youtube.com/watch?v={video_id}");
+        if !self.force_v4.load(Ordering::Relaxed) {
+            let response = self.http.get(&url).header("Accept-Language", "en-US,en").send()?;
+            if !is_rate_limited(response.status().as_u16(), response.url().as_str()) {
+                return Ok((&self.http, read_capped(response, MAX_PAGE_BYTES, "watch page")?));
+            }
+            self.force_v4.store(true, Ordering::Relaxed);
+        }
+
         let response = self
-            .http
-            .post(format!("https://www.youtube.com/youtubei/v1/player?key={api_key}"))
-            .json(&body)
-            .send()?;
-        let raw = read_capped(response, MAX_PAGE_BYTES, "player")?;
-        let resp: Value =
-            serde_json::from_str(&raw).context("player response was not JSON")?;
-
-        let status = resp["playabilityStatus"]["status"].as_str().unwrap_or("UNKNOWN");
-        if status != "OK" {
-            let reason = resp["playabilityStatus"]["reason"]
-                .as_str()
-                .unwrap_or("no reason given");
-            bail!("video {video_id} is not available: {reason}");
+            .http_v4
+            .get(&url)
+            .header("Accept-Language", "en-US,en")
+            .send()
+            .context("YouTube rate-limited this connection and retrying over IPv4 failed")?;
+        if is_rate_limited(response.status().as_u16(), response.url().as_str()) {
+            bail!("YouTube is rate-limiting this IP address (it answered with a captcha page) — wait a while and try again");
         }
-        Ok(resp)
+        Ok((&self.http_v4, read_capped(response, MAX_PAGE_BYTES, "watch page")?))
     }
+}
 
-    fn transcript(&self, player: &Value, languages: &[String]) -> Result<Transcript> {
-        let tracks = player["captions"]["playerCaptionsTracklistRenderer"]["captionTracks"]
-            .as_array()
-            .filter(|t| !t.is_empty())
-            .ok_or_else(|| anyhow!("this video has no transcript"))?;
+fn build_http(local_address: Option<IpAddr>) -> Result<reqwest::blocking::Client> {
+    Ok(reqwest::blocking::Client::builder()
+        .user_agent(USER_AGENT)
+        .local_address(local_address)
+        // Set on the client, not per call site, so no request can hang forever.
+        .timeout(std::time::Duration::from_secs(30))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .build()?)
+}
 
-        let track = pick_track(tracks, languages);
-        let base_url = track["baseUrl"].as_str().context("caption track has no baseUrl")?;
+/// Whether a response is Google's bot check rather than the page we asked for.
+///
+/// The block shows up as a redirect to `google.com/sorry/...` (which the client
+/// follows, ending on a 429), or as a bare 429. Without this check the captcha page
+/// gets scraped like a watch page and the error blames YouTube's layout instead.
+fn is_rate_limited(status: u16, final_url: &str) -> bool {
+    if status == 429 {
+        return true;
+    }
+    reqwest::Url::parse(final_url).is_ok_and(|url| {
+        url.host_str().is_some_and(|host| host.ends_with("google.com"))
+            && url.path().starts_with("/sorry/")
+    })
+}
 
-        let response = self.http.get(as_json3(base_url)).send()?;
-        let body = read_capped(response, MAX_TRANSCRIPT_BYTES, "transcript")?;
-        let parsed: Value = serde_json::from_str(&body)
-            .context("YouTube returned no transcript data for this track")?;
+fn player(http: &reqwest::blocking::Client, video_id: &str, api_key: &str) -> Result<Value> {
+    let body = json!({
+        "videoId": video_id,
+        "context": {"client": {
+            "clientName": "ANDROID",
+            "clientVersion": ANDROID_CLIENT_VERSION,
+        }},
+    });
+    let response = http
+        .post(format!("https://www.youtube.com/youtubei/v1/player?key={api_key}"))
+        .json(&body)
+        .send()?;
+    let raw = read_capped(response, MAX_PAGE_BYTES, "player")?;
+    let resp: Value =
+        serde_json::from_str(&raw).context("player response was not JSON")?;
 
-        let snippets = parsed["events"]
-            .as_array()
-            .map(|events| {
-                events
-                    .iter()
-                    .filter_map(|event| {
-                        let text: String = event["segs"]
-                            .as_array()?
-                            .iter()
-                            .filter_map(|seg| seg["utf8"].as_str())
-                            .collect();
-                        // json3 emits empty padding events; drop them.
-                        if text.trim().is_empty() {
-                            return None;
-                        }
-                        Some(Snippet {
-                            text: text.trim_end().to_string(),
-                            start: event["tStartMs"].as_f64().unwrap_or(0.0) / 1000.0,
-                        })
+    let status = resp["playabilityStatus"]["status"].as_str().unwrap_or("UNKNOWN");
+    if status != "OK" {
+        let reason = resp["playabilityStatus"]["reason"]
+            .as_str()
+            .unwrap_or("no reason given");
+        bail!("video {video_id} is not available: {reason}");
+    }
+    Ok(resp)
+}
+
+fn transcript(
+    http: &reqwest::blocking::Client,
+    player: &Value,
+    languages: &[String],
+) -> Result<Transcript> {
+    let tracks = player["captions"]["playerCaptionsTracklistRenderer"]["captionTracks"]
+        .as_array()
+        .filter(|t| !t.is_empty())
+        .ok_or_else(|| anyhow!("this video has no transcript"))?;
+
+    let track = pick_track(tracks, languages);
+    let base_url = track["baseUrl"].as_str().context("caption track has no baseUrl")?;
+
+    let response = http.get(as_json3(base_url)).send()?;
+    let body = read_capped(response, MAX_TRANSCRIPT_BYTES, "transcript")?;
+    let parsed: Value = serde_json::from_str(&body)
+        .context("YouTube returned no transcript data for this track")?;
+
+    let snippets = parsed["events"]
+        .as_array()
+        .map(|events| {
+            events
+                .iter()
+                .filter_map(|event| {
+                    let text: String = event["segs"]
+                        .as_array()?
+                        .iter()
+                        .filter_map(|seg| seg["utf8"].as_str())
+                        .collect();
+                    // json3 emits empty padding events; drop them.
+                    if text.trim().is_empty() {
+                        return None;
+                    }
+                    Some(Snippet {
+                        text: text.trim_end().to_string(),
+                        start: event["tStartMs"].as_f64().unwrap_or(0.0) / 1000.0,
                     })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
 
-        if snippets.is_empty() {
-            bail!("transcript track was empty");
-        }
-
-        Ok(Transcript { language: language_label(track), snippets })
+    if snippets.is_empty() {
+        bail!("transcript track was empty");
     }
+
+    Ok(Transcript { language: language_label(track), snippets })
 }
 
 /// Read a response body as UTF-8, refusing to buffer more than `cap` bytes.
@@ -284,6 +338,19 @@ mod tests {
         // Unparseable input degrades to the leading date.
         assert_eq!(utc_date("2020-06-15"), "2020-06-15");
         assert_eq!(utc_date(""), "");
+    }
+
+    #[test]
+    fn detects_google_rate_limit_responses() {
+        // A followed redirect to the captcha page, whatever the final status.
+        let sorry = "https://www.google.com/sorry/index?continue=https://www.youtube.com/watch";
+        assert!(is_rate_limited(429, sorry));
+        assert!(is_rate_limited(200, sorry));
+        // A bare 429 without the redirect.
+        assert!(is_rate_limited(429, "https://www.youtube.com/watch?v=abc"));
+        // A normal watch page, including one whose query merely mentions `sorry`.
+        assert!(!is_rate_limited(200, "https://www.youtube.com/watch?v=abc"));
+        assert!(!is_rate_limited(200, "https://www.youtube.com/results?q=/sorry/"));
     }
 
     #[test]
